@@ -19,6 +19,7 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <stdio.h>
 #include "SDL_internal.h"
 
 #ifdef SDL_GPU_VULKAN
@@ -1035,6 +1036,10 @@ typedef struct VulkanCommandBuffer
     VulkanUniformBuffer *fragmentUniformBuffers[MAX_UNIFORM_BUFFERS_PER_STAGE];
     VulkanUniformBuffer *computeUniformBuffers[MAX_UNIFORM_BUFFERS_PER_STAGE];
 
+    // Queries
+    VkQueryPool queryPool;
+    Uint32 timestampCount;
+
     // Track used resources
 
     VulkanBuffer **usedBuffers;
@@ -1117,6 +1122,10 @@ struct VulkanRenderer
     VkPhysicalDeviceProperties2KHR physicalDeviceProperties;
     VkPhysicalDeviceDriverPropertiesKHR physicalDeviceDriverProperties;
     VkDevice logicalDevice;
+
+    Uint32 timestampValidBits;
+    Uint64 timestampMask;
+
     Uint8 integratedMemoryNotification;
     Uint8 outOfDeviceLocalMemoryWarning;
     Uint8 outofBARMemoryWarning;
@@ -3138,6 +3147,11 @@ static void VULKAN_INTERNAL_DestroyCommandPool(
         SDL_free(commandBuffer->usedComputePipelines);
         SDL_free(commandBuffer->usedFramebuffers);
         SDL_free(commandBuffer->usedUniformBuffers);
+
+        renderer->vkDestroyQueryPool(
+            renderer->logicalDevice,
+            commandBuffer->queryPool,
+            NULL);
 
         SDL_free(commandBuffer);
     }
@@ -7972,6 +7986,12 @@ static void VULKAN_BeginRenderPass(
     renderPassBeginInfo.renderArea.offset.x = 0;
     renderPassBeginInfo.renderArea.offset.y = 0;
 
+    renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
+
     renderer->vkCmdBeginRenderPass(
         vulkanCommandBuffer->commandBuffer,
         &renderPassBeginInfo,
@@ -8138,6 +8158,11 @@ static void VULKAN_EndRenderPass(
 
     renderer->vkCmdEndRenderPass(
         vulkanCommandBuffer->commandBuffer);
+    renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
 
     for (i = 0; i < vulkanCommandBuffer->colorAttachmentSubresourceCount; i += 1) {
         VULKAN_INTERNAL_TextureSubresourceTransitionToDefaultUsage(
@@ -8202,6 +8227,13 @@ static void VULKAN_BeginComputePass(
 {
     VulkanCommandBuffer *vulkanCommandBuffer = (VulkanCommandBuffer *)commandBuffer;
     VulkanRenderer *renderer = vulkanCommandBuffer->renderer;
+
+    renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
+
     VulkanBufferContainer *bufferContainer;
     VulkanBuffer *buffer;
     Uint32 i;
@@ -8741,6 +8773,12 @@ static void VULKAN_EndComputePass(
     vulkanCommandBuffer->computeReadOnlyDescriptorSet = VK_NULL_HANDLE;
     vulkanCommandBuffer->computeReadWriteDescriptorSet = VK_NULL_HANDLE;
     vulkanCommandBuffer->computeUniformDescriptorSet = VK_NULL_HANDLE;
+
+    vulkanCommandBuffer->renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
 }
 
 static void *VULKAN_MapTransferBuffer(
@@ -9491,6 +9529,23 @@ static bool VULKAN_INTERNAL_AllocateCommandBuffer(
 
     commandBuffer->swapchainRequested = false;
 
+    // Query
+    VkQueryPoolCreateInfo queryPoolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = 128,
+        .pipelineStatistics = 0,
+    };
+    vulkanResult = renderer->vkCreateQueryPool(
+        renderer->logicalDevice,
+        &queryPoolCreateInfo,
+        NULL,
+        &commandBuffer->queryPool);
+    CHECK_VULKAN_ERROR_AND_RETURN(vulkanResult, vkCreateQueryPool, NULL);
+    commandBuffer->timestampCount = 0;
+
     // Pool it!
 
     vulkanCommandPool->inactiveCommandBuffers[vulkanCommandPool->inactiveCommandBufferCount] = commandBuffer;
@@ -9692,6 +9747,13 @@ static SDL_GPUCommandBuffer *VULKAN_AcquireCommandBuffer(
     if (!VULKAN_INTERNAL_BeginCommandBuffer(renderer, commandBuffer)) {
         return NULL;
     }
+
+    /* Reset the query pool */
+    renderer->vkCmdResetQueryPool(
+        commandBuffer->commandBuffer,
+        commandBuffer->queryPool,
+        0,
+        128);
 
     return (SDL_GPUCommandBuffer *)commandBuffer;
 }
@@ -10585,6 +10647,44 @@ static void VULKAN_INTERNAL_CleanCommandBuffer(
 
     if (commandBuffer->isDefrag) {
         renderer->defragInProgress = 0;
+    }
+
+    // Read timestamps
+    if (commandBuffer->timestampCount > 0) {
+        Uint64 *timestampResults = SDL_stack_alloc(
+            Uint64,
+            commandBuffer->timestampCount);
+
+        renderer->vkGetQueryPoolResults(
+            renderer->logicalDevice,
+            commandBuffer->queryPool,
+            0,
+            commandBuffer->timestampCount,
+            commandBuffer->timestampCount * sizeof(Uint64),
+            timestampResults,
+            sizeof(Uint64),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+        );
+
+        float timestampPeriod = renderer->physicalDeviceProperties
+            .properties.limits.timestampPeriod;
+
+        for (Uint32 i = 0; i < commandBuffer->timestampCount; i += 2) {
+            uint64_t start_ticks = timestampResults[i] & renderer->timestampMask;
+            uint64_t end_ticks   = timestampResults[i + 1] & renderer->timestampMask;
+
+            // FrameCounter, PassIndex, TimestampPeriod, Start, End, Nanos
+            printf("%d,%d,%f,%llu,%llu,%f\n",
+                commandBuffer->renderer->claimedWindows[0]->frameCounter,
+                i / 2,
+                timestampPeriod,
+                (unsigned long long)start_ticks,
+                (unsigned long long)end_ticks,
+                (double)(end_ticks - start_ticks) * timestampPeriod);
+        }
+
+        SDL_stack_free(timestampResults);
+        commandBuffer->timestampCount = 0;
     }
 
     // Return command buffer to pool
@@ -12369,6 +12469,35 @@ static Uint8 VULKAN_INTERNAL_DeterminePhysicalDevice(VulkanRenderer *renderer, V
         SDL_stack_free(physicalDevices);
         SDL_stack_free(physicalDeviceExtensions);
         return 0;
+    }
+
+    {
+        Uint32 queueFamilyCount;
+        renderer->vkGetPhysicalDeviceQueueFamilyProperties(
+            renderer->physicalDevice,
+            &queueFamilyCount,
+            NULL);
+
+        VkQueueFamilyProperties *queueProps = SDL_stack_alloc(
+            VkQueueFamilyProperties,
+            queueFamilyCount);
+        renderer->vkGetPhysicalDeviceQueueFamilyProperties(
+            renderer->physicalDevice,
+            &queueFamilyCount,
+            queueProps);
+
+        renderer->timestampValidBits = queueProps[renderer->queueFamilyIndex]
+            .timestampValidBits;
+
+        if (renderer->timestampValidBits == 64) {
+            renderer->timestampMask = ~(0ULL);
+        } else if (renderer->timestampValidBits > 0) {
+            renderer->timestampMask = (1ULL << renderer->timestampValidBits) - 1;
+        } else {
+            renderer->timestampMask = 0; // Timestamps not supported!
+        }
+
+        SDL_stack_free(queueProps);
     }
 
     renderer->physicalDeviceProperties.sType =
