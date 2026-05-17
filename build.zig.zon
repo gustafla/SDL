@@ -4,7 +4,7 @@
 .{
     .name = .sdl,
     .version = "0.5.0+3.4.8",
-    .fingerprint = 0xec638ccbfafe3248,
+    .fingerprint = 0xec638ccbd484021e,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .sdl_linux_deps = .{
