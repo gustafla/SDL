@@ -10673,11 +10673,9 @@ static void VULKAN_INTERNAL_CleanCommandBuffer(
             uint64_t start_ticks = timestampResults[i] & renderer->timestampMask;
             uint64_t end_ticks   = timestampResults[i + 1] & renderer->timestampMask;
 
-            // FrameCounter, PassIndex, TimestampPeriod, Start, End, Nanos
-            printf("%d,%d,%f,%llu,%llu,%f\n",
-                commandBuffer->renderer->claimedWindows[0]->frameCounter,
+            // PassIndex, Start, End, Nanos
+            printf("%d,%llu,%llu,%f\n",
                 i / 2,
-                timestampPeriod,
                 (unsigned long long)start_ticks,
                 (unsigned long long)end_ticks,
                 (double)(end_ticks - start_ticks) * timestampPeriod);
@@ -12858,6 +12856,10 @@ static SDL_GPUDevice *VULKAN_CreateDevice(bool debugMode, bool preferLowPower, S
     if (verboseLogs) {
         SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Vulkan Device: %s", deviceName);
     }
+
+    printf(
+        "# TimestampPeriod: %f\n",
+        renderer->physicalDeviceProperties.properties.limits.timestampPeriod);
 
     // Record driver version. This is provided as a backup if
     // VK_KHR_driver_properties is not available but as most drivers support it
