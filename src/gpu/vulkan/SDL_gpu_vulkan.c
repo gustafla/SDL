@@ -7836,6 +7836,12 @@ static void VULKAN_BeginRenderPass(
     Uint32 framebufferWidth = SDL_MAX_UINT32;
     Uint32 framebufferHeight = SDL_MAX_UINT32;
 
+    renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
+
     for (i = 0; i < numColorTargets; i += 1) {
         VulkanTextureContainer *textureContainer = (VulkanTextureContainer *)colorTargetInfos[i].texture;
 
@@ -7985,12 +7991,6 @@ static void VULKAN_BeginRenderPass(
     renderPassBeginInfo.renderArea.extent.height = framebufferHeight;
     renderPassBeginInfo.renderArea.offset.x = 0;
     renderPassBeginInfo.renderArea.offset.y = 0;
-
-    renderer->vkCmdWriteTimestamp(
-        vulkanCommandBuffer->commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        vulkanCommandBuffer->queryPool,
-        vulkanCommandBuffer->timestampCount++);
 
     renderer->vkCmdBeginRenderPass(
         vulkanCommandBuffer->commandBuffer,
@@ -8158,11 +8158,6 @@ static void VULKAN_EndRenderPass(
 
     renderer->vkCmdEndRenderPass(
         vulkanCommandBuffer->commandBuffer);
-    renderer->vkCmdWriteTimestamp(
-        vulkanCommandBuffer->commandBuffer,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        vulkanCommandBuffer->queryPool,
-        vulkanCommandBuffer->timestampCount++);
 
     for (i = 0; i < vulkanCommandBuffer->colorAttachmentSubresourceCount; i += 1) {
         VULKAN_INTERNAL_TextureSubresourceTransitionToDefaultUsage(
@@ -8216,6 +8211,12 @@ static void VULKAN_EndRenderPass(
     SDL_zeroa(vulkanCommandBuffer->fragmentSamplerTextureViewBindings);
     SDL_zeroa(vulkanCommandBuffer->fragmentStorageTextureViewBindings);
     SDL_zeroa(vulkanCommandBuffer->fragmentStorageBufferBindings);
+
+    renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
 }
 
 static void VULKAN_BeginComputePass(
@@ -8228,17 +8229,17 @@ static void VULKAN_BeginComputePass(
     VulkanCommandBuffer *vulkanCommandBuffer = (VulkanCommandBuffer *)commandBuffer;
     VulkanRenderer *renderer = vulkanCommandBuffer->renderer;
 
-    renderer->vkCmdWriteTimestamp(
-        vulkanCommandBuffer->commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        vulkanCommandBuffer->queryPool,
-        vulkanCommandBuffer->timestampCount++);
-
     VulkanBufferContainer *bufferContainer;
     VulkanBuffer *buffer;
     Uint32 i;
 
     vulkanCommandBuffer->readWriteComputeStorageTextureSubresourceCount = numStorageTextureBindings;
+
+    renderer->vkCmdWriteTimestamp(
+        vulkanCommandBuffer->commandBuffer,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        vulkanCommandBuffer->queryPool,
+        vulkanCommandBuffer->timestampCount++);
 
     for (i = 0; i < numStorageTextureBindings; i += 1) {
         VulkanTextureContainer *textureContainer = (VulkanTextureContainer *)storageTextureBindings[i].texture;
